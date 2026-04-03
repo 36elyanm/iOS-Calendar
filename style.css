@@ -1,0 +1,53 @@
+/* CSS styling for iOS Calendar */
+
+/* General styles */
+body {
+    font-family: -apple-system, "Helvetica Neue", "San Francisco", "Segoe UI", sans-serif;
+    background-color: #F7F7F8;
+    color: #000;
+}
+
+/* Header styles */
+.header {
+    background-color: #FFFFFF;
+    border-bottom: 1px solid #C8C7CC;
+    padding: 10px 15px;
+}
+.header h1 {
+    font-size: 20px;
+    margin: 0;
+}
+
+/* Day Grid styles */
+.day-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+}
+.day-cell {
+    padding: 15px;
+    background-color: #FFFFFF;
+    border: 1px solid #E1E1E1;
+    text-align: center;
+}
+.day-cell:hover {
+    background-color: #F0F0F0;
+}
+
+/* Event styles */
+.event {
+    background-color: #007AFF;
+    color: white;
+    padding: 5px;
+    border-radius: 5px;
+    margin: 2px 0;
+}
+.event.title {
+    font-weight: bold;
+}
+
+/* Today’s date highlight */
+.today {
+    background-color: #FFCC00;
+    border-radius: 5px;
+}
