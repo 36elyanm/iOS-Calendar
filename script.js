@@ -12,8 +12,7 @@ function initCalendar() {
 
 // Function to render the calendar
 function renderCalendar(month, year) {
-    const calendarContainer = document.getElementById('calendar');
-    calendarContainer.innerHTML = '';
+    const calendarContainer = document.getElementById('calendar-body');
 
     // Create header
     const header = document.createElement('div');
