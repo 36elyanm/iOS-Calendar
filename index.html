@@ -1,96 +1,10 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iOS-Style Calendar</title>
-    <style>
-        body { font-family: Arial, sans-serif; }
-        .calendar { display: grid; grid-template-columns: repeat(7, 1fr); }
-        .day { border: 1px solid #ccc; padding: 10px; }
-        .header { grid-column: span 7; text-align: center; }
-        .event { background-color: #f9f9f9; margin: 5px; padding: 5px; border: 1px solid #ccc; }
-    </style>
+    <link rel="stylesheet" href="style.css">
+    <script src="script.js"></script>
 </head>
 <body>
-    <h1>iOS-Style Calendar</h1>
-    <div id="calendar" class="calendar"></div>
-    <div id="eventModal" style="display:none;">
-        <h2>Create Event</h2>
-        <form id="eventForm">
-            <label for="eventName">Event Name:</label><br>
-            <input type="text" id="eventName" required><br>
-            <label for="eventCategory">Category:</label><br>
-            <select id="eventCategory">
-                <option value="personal">Personal</option>
-                <option value="work">Work</option>
-                <option value="important">Important</option>
-            </select><br>
-            <label for="eventDate">Date:</label><br>
-            <input type="date" id="eventDate" required><br>
-            <label for="eventTime">Time:</label><br>
-            <input type="time" id="eventTime"><br>
-            <input type="submit" value="Add Event">
-        </form>
-    </div>
-    <script>
-        const calendarElem = document.getElementById('calendar');
-        const eventModal = document.getElementById('eventModal');
-        const eventForm = document.getElementById('eventForm');
-        const events = [];
-        const daysInWeek = 7;
-        const currentDate = new Date();
 
-        function renderCalendar() {
-            calendarElem.innerHTML = ''; // Clear previous calendar
-            const month = currentDate.getMonth();
-            const year = currentDate.getFullYear();
-            const firstDay = new Date(year, month, 1);
-            const lastDay = new Date(year, month + 1, 0);
-
-            // Fill in empty days before the first day of the month
-            for (let i = 0; i < firstDay.getDay(); i++) {
-                const emptyDiv = document.createElement('div');
-                emptyDiv.className = 'day';
-                calendarElem.appendChild(emptyDiv);
-            }
-
-            // Fill in days of the month
-            for (let day = 1; day <= lastDay.getDate(); day++) {
-                const dayDiv = document.createElement('div');
-                dayDiv.className = 'day';
-                dayDiv.textContent = day;
-                dayDiv.onclick = () => openEventModal(year, month, day);
-
-                // Display Events
-                const dayEvents = events.filter(event => 
-                    event.date == `${year}-${month + 1}-${day}`);
-                dayEvents.forEach(event => {
-                    const eventDiv = document.createElement('div');
-                    eventDiv.className = 'event';
-                    eventDiv.textContent = `${event.name} - (${event.category})`;
-                    dayDiv.appendChild(eventDiv);
-                });
-                calendarElem.appendChild(dayDiv);
-            }
-        }
-
-        function openEventModal(year, month, day) {
-            eventModal.style.display = 'block';
-            eventForm.onsubmit = (e) => {
-                e.preventDefault();
-                const newEvent = {
-                    name: document.getElementById('eventName').value,
-                    category: document.getElementById('eventCategory').value,
-                    date: `${year}-${month + 1}-${day}`
-                };
-                events.push(newEvent);
-                eventModal.style.display = 'none';
-                renderCalendar();
-            };
-        }
-
-        renderCalendar();
-    </script>
 </body>
 </html>
