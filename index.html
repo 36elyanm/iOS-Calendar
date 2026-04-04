@@ -11,7 +11,8 @@ import {
   isSameDay, 
   addDays, 
   eachDayOfInterval,
-  parseISO
+  parseISO,
+  isToday
 } from 'date-fns';
 import { 
   ChevronLeft, 
@@ -23,31 +24,32 @@ import {
   LogOut, 
   User, 
   Trash2, 
-  Check,
-  Settings,
-  X
+  X,
+  Clock,
+  LayoutGrid,
+  List,
+  Bell,
+  Search
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInAnonymously, 
-  signInWithCustomToken, 
   onAuthStateChanged, 
   signOut,
   createUserWithEmailAndPassword,
-  signInWithEmailAndPassword
+  signInWithEmailAndPassword,
+  signInWithCustomToken,
+  signInAnonymously
 } from 'firebase/auth';
 import { 
   getFirestore, 
   collection, 
   doc, 
-  setDoc, 
   addDoc, 
   onSnapshot, 
-  query, 
-  where, 
   deleteDoc,
-  updateDoc
+  query,
+  orderBy
 } from 'firebase/firestore';
 
 // --- Firebase Configuration ---
@@ -55,9 +57,8 @@ const firebaseConfig = JSON.parse(__firebase_config);
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'calendar-app-v1';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'premium-calendar-v2';
 
-// --- Main App Component ---
 export default function App() {
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -65,305 +66,212 @@ export default function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [events, setEvents] = useState([]);
   const [calendars, setCalendars] = useState([
-    { id: 'default', name: 'Personal', color: 'bg-blue-500' }
+    { id: 'personal', name: 'Personal', color: '#3b82f6' },
+    { id: 'work', name: 'Work', color: '#ef4444' }
   ]);
-  const [selectedDay, setSelectedDay] = useState(null);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
-  const [authMode, setAuthMode] = useState('login'); // 'login' | 'signup'
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
 
-  // 1. Auth Initialization
+  // 1. Auth Logic
   useEffect(() => {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
         }
-      } catch (err) {
-        console.error("Auth initialization error:", err);
-      } finally {
-        setAuthLoading(false);
-      }
+      } catch (e) { console.error(e); }
+      setAuthLoading(false);
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
+    return onAuthStateChanged(auth, setUser);
   }, []);
 
-  // 2. Data Syncing (Firestore)
+  // 2. Data Sync
   useEffect(() => {
-    if (!user) {
-      setEvents([]);
-      return;
-    }
-
-    // Sync Events
+    if (!user) return;
     const eventsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'events');
-    const unsubscribeEvents = onSnapshot(eventsRef, (snapshot) => {
-      const fetchedEvents = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setEvents(fetchedEvents);
-    }, (err) => console.error("Events sync error:", err));
-
-    // Sync Custom Calendars
-    const calRef = collection(db, 'artifacts', appId, 'users', user.uid, 'calendars');
-    const unsubscribeCals = onSnapshot(calRef, (snapshot) => {
-      if (!snapshot.empty) {
-        const fetchedCals = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        setCalendars(fetchedCals);
-      } else {
-        // Create initial default calendar if none exists
-        const defaultCal = { name: 'Personal', color: 'bg-blue-500' };
-        addDoc(calRef, defaultCal);
-      }
-    }, (err) => console.error("Calendars sync error:", err));
-
-    return () => {
-      unsubscribeEvents();
-      unsubscribeCals();
-    };
+    return onSnapshot(eventsRef, (snapshot) => {
+      setEvents(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+    }, (err) => console.error("Sync error:", err));
   }, [user]);
 
-  // --- Handlers ---
+  // --- Helpers ---
+  const days = useMemo(() => {
+    const start = startOfWeek(startOfMonth(currentDate));
+    const end = endOfWeek(endOfMonth(currentDate));
+    return eachDayOfInterval({ start, end });
+  }, [currentDate]);
+
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
     const email = e.target.email.value;
     const password = e.target.password.value;
-
     try {
-      if (authMode === 'signup') {
-        await createUserWithEmailAndPassword(auth, email, password);
-      } else {
-        await signInWithEmailAndPassword(auth, email, password);
-      }
-    } catch (err) {
-      setAuthError(err.message);
-    }
+      if (authMode === 'signup') await createUserWithEmailAndPassword(auth, email, password);
+      else await signInWithEmailAndPassword(auth, email, password);
+    } catch (err) { setAuthError(err.message.replace('Firebase: ', '')); }
   };
 
-  const addEvent = async (eventData) => {
-    if (!user) return;
-    try {
-      const eventsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'events');
-      await addDoc(eventsRef, {
-        ...eventData,
-        createdAt: new Date().toISOString()
-      });
-      setIsEventModalOpen(false);
-    } catch (err) {
-      console.error("Error adding event:", err);
-    }
+  const saveEvent = async (e) => {
+    e.preventDefault();
+    const event = {
+      title: e.target.title.value,
+      description: e.target.description.value,
+      date: selectedDate.toISOString(),
+      calendarId: e.target.calendar.value,
+      time: e.target.time.value
+    };
+    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'events'), event);
+    setIsEventModalOpen(false);
   };
 
-  const deleteEvent = async (id) => {
-    if (!user) return;
-    try {
-      const docRef = doc(db, 'artifacts', appId, 'users', user.uid, 'events', id);
-      await deleteDoc(docRef);
-    } catch (err) {
-      console.error("Error deleting event:", err);
-    }
-  };
-
-  const addCalendar = async () => {
-    if (!user) return;
-    const name = prompt("Enter calendar name:");
-    if (!name) return;
-    const colors = ['bg-blue-500', 'bg-red-500', 'bg-green-500', 'bg-purple-500', 'bg-yellow-500', 'bg-pink-500'];
-    const color = colors[Math.floor(Math.random() * colors.length)];
-    
-    try {
-      const calRef = collection(db, 'artifacts', appId, 'users', user.uid, 'calendars');
-      await addDoc(calRef, { name, color });
-    } catch (err) {
-      console.error("Error adding calendar:", err);
-    }
-  };
-
-  // --- Calendar Logic ---
-  const monthStart = startOfMonth(currentDate);
-  const monthEnd = endOfMonth(monthStart);
-  const startDate = startOfWeek(monthStart);
-  const endDate = endOfWeek(monthEnd);
-  
-  const calendarDays = useMemo(() => {
-    return eachDayOfInterval({ start: startDate, end: endDate });
-  }, [startDate, endDate]);
-
-  const nextMonth = () => setCurrentDate(addMonths(currentDate, 1));
-  const prevMonth = () => setCurrentDate(subMonths(currentDate, 1));
-
-  if (authLoading) {
-    return (
-      <div className={`min-h-screen flex items-center justify-center ${darkMode ? 'bg-slate-900 text-white' : 'bg-slate-50 text-slate-900'}`}>
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
-      </div>
-    );
-  }
+  if (authLoading) return <div className="h-screen flex items-center justify-center bg-slate-950 text-blue-500 animate-pulse">Initializing...</div>;
 
   if (!user) {
     return (
-      <div className={`min-h-screen flex items-center justify-center p-4 ${darkMode ? 'bg-slate-950 text-white' : 'bg-slate-50 text-slate-900'}`}>
-        <div className={`w-full max-w-md p-8 rounded-2xl shadow-2xl ${darkMode ? 'bg-slate-900 border border-slate-800' : 'bg-white border border-slate-200'}`}>
-          <div className="flex justify-center mb-6">
-            <div className="p-3 bg-blue-500 rounded-xl">
+      <div className={`min-h-screen flex items-center justify-center p-6 ${darkMode ? 'bg-slate-950' : 'bg-slate-50'}`}>
+        <div className={`w-full max-w-md p-10 rounded-3xl shadow-2xl transition-all border ${darkMode ? 'bg-slate-900 border-slate-800 text-white' : 'bg-white border-slate-100 text-slate-900'}`}>
+          <div className="flex justify-center mb-8">
+            <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-500/30">
               <CalendarIcon className="text-white w-8 h-8" />
             </div>
           </div>
-          <h2 className="text-2xl font-bold text-center mb-2">Cloud Calendar</h2>
-          <p className="text-slate-500 text-center mb-8">Save your events to the cloud and access them anywhere.</p>
+          <h1 className="text-3xl font-black text-center mb-2 tracking-tight">CloudCal</h1>
+          <p className="text-slate-500 text-center mb-8 font-medium">Smart scheduling, everywhere.</p>
           
-          <form onSubmit={handleAuth} className="space-y-4">
-            <div>
-              <label className="block text-sm font-medium mb-1 opacity-70">Email Address</label>
-              <input name="email" type="email" required className={`w-full px-4 py-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border`} />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1 opacity-70">Password</label>
-              <input name="password" type="password" required className={`w-full px-4 py-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border`} />
-            </div>
-            {authError && <p className="text-red-500 text-sm">{authError}</p>}
-            <button type="submit" className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors">
-              {authMode === 'login' ? 'Sign In' : 'Create Account'}
+          <form onSubmit={handleAuth} className="space-y-5">
+            <input name="email" type="email" placeholder="Email Address" required className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border`} />
+            <input name="password" type="password" placeholder="Password" required className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border`} />
+            {authError && <div className="p-3 rounded-lg bg-red-500/10 text-red-500 text-sm text-center border border-red-500/20">{authError}</div>}
+            <button className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-2xl shadow-xl shadow-blue-500/20 transition-all transform hover:scale-[1.02] active:scale-95">
+              {authMode === 'login' ? 'Welcome Back' : 'Get Started'}
             </button>
           </form>
 
-          <div className="mt-6 text-center">
-            <button 
-              onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
-              className="text-blue-500 hover:underline text-sm"
-            >
-              {authMode === 'login' ? "Don't have an account? Sign up" : "Already have an account? Log in"}
-            </button>
-          </div>
+          <button onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')} className="w-full mt-6 text-sm font-semibold text-blue-500 hover:text-blue-400 transition-colors">
+            {authMode === 'login' ? "New here? Create an account" : "Have an account? Sign in"}
+          </button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`min-h-screen flex flex-col md:flex-row ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-slate-50 text-slate-900'} transition-colors duration-300`}>
+    <div className={`flex flex-col lg:flex-row h-screen transition-colors duration-500 ${darkMode ? 'bg-slate-950 text-slate-100' : 'bg-white text-slate-900'}`}>
       
-      {/* Sidebar */}
-      <aside className={`w-full md:w-64 p-6 border-r ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-200'}`}>
-        <div className="flex items-center gap-3 mb-10">
-          <div className="p-2 bg-blue-500 rounded-lg">
-            <CalendarIcon className="text-white w-5 h-5" />
+      {/* 1. Sidebar / Navigation */}
+      <nav className={`w-full lg:w-72 p-6 flex flex-col border-r ${darkMode ? 'bg-slate-900 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+        <div className="flex items-center gap-3 mb-10 px-2">
+          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center shadow-lg shadow-blue-600/20">
+            <CalendarIcon className="text-white w-6 h-6" />
           </div>
-          <h1 className="font-bold text-xl tracking-tight">CloudCal</h1>
+          <span className="font-bold text-xl tracking-tight">CloudCal</span>
         </div>
 
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">My Calendars</h3>
-            <button onClick={addCalendar} className="p-1 hover:bg-slate-200 dark:hover:bg-slate-800 rounded transition-colors">
-              <Plus className="w-4 h-4" />
+        <div className="flex-1 space-y-8">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 px-2">Overview</h3>
+            <div className="space-y-1">
+              <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-blue-600 text-white font-medium shadow-lg shadow-blue-600/20">
+                <LayoutGrid className="w-5 h-5" /> Month
+              </button>
+              <button className="w-full flex items-center gap-3 px-4 py-3 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors text-slate-500 font-medium">
+                <List className="w-5 h-5" /> Schedule
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 px-2">Calendars</h3>
+            <div className="space-y-2">
+              {calendars.map(cal => (
+                <div key={cal.id} className="flex items-center gap-3 px-4 py-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl cursor-pointer group transition-all">
+                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: cal.color }}></div>
+                  <span className="text-sm font-semibold">{cal.name}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-6 border-t border-slate-800/10 dark:border-white/10 space-y-4">
+          <div className="flex items-center justify-between p-2 rounded-2xl bg-white/5">
+             <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-slate-700 flex items-center justify-center text-xs font-bold uppercase">{user.email[0]}</div>
+                <div className="max-w-[120px] overflow-hidden">
+                  <p className="text-xs font-bold truncate">{user.email.split('@')[0]}</p>
+                  <button onClick={() => signOut(auth)} className="text-[10px] text-red-500 hover:underline uppercase tracking-tighter">Sign Out</button>
+                </div>
+             </div>
+             <button onClick={() => setDarkMode(!darkMode)} className={`p-2 rounded-xl transition-all ${darkMode ? 'bg-slate-800 text-yellow-400' : 'bg-slate-200 text-slate-600'}`}>
+               {darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+             </button>
+          </div>
+        </div>
+      </nav>
+
+      {/* 2. Main Content Area */}
+      <main className="flex-1 flex flex-col overflow-hidden relative">
+        
+        {/* Top Header */}
+        <header className="p-6 lg:p-8 flex items-center justify-between z-10">
+          <div className="flex items-center gap-6">
+            <h2 className="text-3xl font-black tracking-tight">{format(currentDate, 'MMMM yyyy')}</h2>
+            <div className="flex p-1 bg-slate-200 dark:bg-slate-800 rounded-2xl">
+              <button onClick={() => setCurrentDate(subMonths(currentDate, 1))} className="p-2 hover:bg-white dark:hover:bg-slate-700 rounded-xl transition-all"><ChevronLeft className="w-5 h-5" /></button>
+              <button onClick={() => setCurrentDate(new Date())} className="px-4 text-xs font-bold uppercase tracking-widest hover:text-blue-500 transition-colors">Today</button>
+              <button onClick={() => setCurrentDate(addMonths(currentDate, 1))} className="p-2 hover:bg-white dark:hover:bg-slate-700 rounded-xl transition-all"><ChevronRight className="w-5 h-5" /></button>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div className="hidden md:flex items-center bg-slate-100 dark:bg-slate-900 rounded-2xl px-4 py-2 border border-slate-200 dark:border-slate-800">
+              <Search className="w-4 h-4 text-slate-500 mr-2" />
+              <input type="text" placeholder="Search events..." className="bg-transparent text-sm outline-none w-40" />
+            </div>
+            <button onClick={() => { setSelectedDate(new Date()); setIsEventModalOpen(true); }} className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-2xl shadow-xl shadow-blue-600/30 flex items-center gap-2 transition-all transform hover:scale-105 active:scale-95">
+              <Plus className="w-5 h-5" /> <span className="hidden sm:inline">Add Event</span>
             </button>
           </div>
-          <div className="space-y-2">
-            {calendars.map(cal => (
-              <div key={cal.id} className="flex items-center gap-3 group">
-                <div className={`w-3 h-3 rounded-full ${cal.color}`}></div>
-                <span className="text-sm font-medium">{cal.name}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="mt-auto pt-10 border-t border-slate-800/10 dark:border-slate-100/10">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-8 h-8 rounded-full bg-slate-500 flex items-center justify-center">
-              <User className="w-4 h-4 text-white" />
-            </div>
-            <div className="overflow-hidden">
-              <p className="text-xs font-medium truncate opacity-70">{user.email}</p>
-              <button onClick={() => signOut(auth)} className="text-xs text-red-500 hover:underline flex items-center gap-1">
-                <LogOut className="w-3 h-3" /> Log out
-              </button>
-            </div>
-          </div>
-          
-          <button 
-            onClick={() => setDarkMode(!darkMode)}
-            className={`w-full flex items-center justify-between p-3 rounded-xl transition-all ${darkMode ? 'bg-slate-800 text-yellow-400' : 'bg-slate-200 text-slate-700'}`}
-          >
-            <span className="text-sm font-semibold">{darkMode ? 'Light Mode' : 'Dark Mode'}</span>
-            {darkMode ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
-        {/* Header */}
-        <header className="p-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-b border-slate-800/10 dark:border-slate-100/10">
-          <div className="flex items-center gap-4">
-            <h2 className="text-2xl font-bold">{format(currentDate, 'MMMM yyyy')}</h2>
-            <div className="flex gap-1">
-              <button onClick={prevMonth} className={`p-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors`}>
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <button onClick={nextMonth} className={`p-2 rounded-full hover:bg-slate-200 dark:hover:bg-slate-800 transition-colors`}>
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-          <button 
-            onClick={() => {
-              setSelectedDay(new Date());
-              setIsEventModalOpen(true);
-            }}
-            className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-full font-semibold shadow-lg shadow-blue-500/20 transition-all active:scale-95"
-          >
-            <Plus className="w-4 h-4" /> Create Event
-          </button>
         </header>
 
-        {/* Calendar Grid */}
-        <div className="flex-1 overflow-auto p-4 md:p-6">
-          <div className="grid grid-cols-7 border-t border-l dark:border-slate-800 border-slate-200 rounded-lg overflow-hidden shadow-sm">
+        {/* Grid Area */}
+        <div className="flex-1 overflow-auto p-4 lg:p-8 pt-0">
+          <div className="grid grid-cols-7 gap-px rounded-3xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-200 dark:bg-slate-800 shadow-2xl">
             {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
-              <div key={day} className={`p-3 text-center text-xs font-bold uppercase tracking-wider border-r border-b dark:border-slate-800 border-slate-200 ${darkMode ? 'bg-slate-900/50 text-slate-500' : 'bg-slate-100 text-slate-600'}`}>
+              <div key={day} className={`p-4 text-center text-xs font-black uppercase tracking-tighter ${darkMode ? 'bg-slate-900 text-slate-500' : 'bg-slate-50 text-slate-400'}`}>
                 {day}
               </div>
             ))}
 
-            {calendarDays.map((day, idx) => {
+            {days.map((day, i) => {
               const dayEvents = events.filter(e => isSameDay(parseISO(e.date), day));
-              const isToday = isSameDay(day, new Date());
-              const isCurrentMonth = isSameMonth(day, monthStart);
+              const currentMonth = isSameMonth(day, currentDate);
+              const today = isToday(day);
 
               return (
                 <div 
-                  key={idx}
-                  onClick={() => {
-                    setSelectedDay(day);
-                    setIsEventModalOpen(true);
-                  }}
-                  className={`min-h-[100px] md:min-h-[140px] p-2 border-r border-b dark:border-slate-800 border-slate-200 relative cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-900/30 transition-colors ${!isCurrentMonth ? 'opacity-30' : ''}`}
+                  key={i} 
+                  onClick={() => { setSelectedDate(day); setIsEventModalOpen(true); }}
+                  className={`min-h-[120px] lg:min-h-[160px] p-3 transition-all relative cursor-pointer ${darkMode ? 'bg-slate-950 hover:bg-slate-900' : 'bg-white hover:bg-slate-50'} ${!currentMonth ? 'opacity-25' : ''}`}
                 >
-                  <div className={`text-sm font-medium inline-flex items-center justify-center w-7 h-7 rounded-full mb-1 ${isToday ? 'bg-blue-600 text-white' : ''}`}>
+                  <div className={`flex items-center justify-center w-8 h-8 rounded-xl text-sm font-bold mb-3 transition-colors ${today ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' : 'text-slate-500'}`}>
                     {format(day, 'd')}
                   </div>
-                  <div className="space-y-1">
-                    {dayEvents.map(event => (
-                      <div 
-                        key={event.id}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm('Delete this event?')) deleteEvent(event.id);
-                        }}
-                        className={`px-2 py-1 text-[10px] md:text-xs rounded border-l-4 truncate ${calendars.find(c => c.id === event.calendarId)?.color || 'bg-slate-500'} bg-opacity-20 border-opacity-100 text-inherit font-medium group relative`}
-                      >
-                        {event.title}
-                        <div className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <Trash2 className="w-3 h-3 text-red-500" />
+                  <div className="space-y-1.5">
+                    {dayEvents.slice(0, 3).map(event => {
+                      const cal = calendars.find(c => c.id === event.calendarId);
+                      return (
+                        <div key={event.id} className="group px-2 py-1.5 rounded-lg text-[10px] font-bold border-l-4 truncate shadow-sm transition-transform hover:scale-[1.02]" style={{ backgroundColor: `${cal?.color}15`, borderLeftColor: cal?.color, color: cal?.color }}>
+                          {event.time && <span className="mr-1.5 opacity-60">{event.time}</span>}
+                          {event.title}
+                          <button onClick={(e) => { e.stopPropagation(); if(confirm('Delete event?')) deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'events', event.id)); }} className="absolute right-1 top-1 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 bg-red-500 rounded text-white"><Trash2 className="w-2 h-2" /></button>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
+                    {dayEvents.length > 3 && <div className="text-[9px] font-black uppercase tracking-widest text-slate-500 pl-2">+{dayEvents.length - 3} more</div>}
                   </div>
                 </div>
               );
@@ -372,59 +280,73 @@ export default function App() {
         </div>
       </main>
 
-      {/* Event Creation Modal */}
-      {isEventModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-sm">
-          <div className={`w-full max-w-md rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in duration-200 ${darkMode ? 'bg-slate-900 border border-slate-800' : 'bg-white border border-slate-200'}`}>
-            <div className="p-6 border-b dark:border-slate-800 flex justify-between items-center">
-              <h3 className="text-xl font-bold">New Event</h3>
-              <button onClick={() => setIsEventModalOpen(false)} className="p-1 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800">
-                <X className="w-5 h-5" />
-              </button>
+      {/* 3. Upcoming Events Panel (Right) */}
+      <aside className={`hidden xl:flex w-80 p-8 flex-col border-l overflow-auto ${darkMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+        <h3 className="text-xl font-black mb-8 flex items-center gap-2">
+          <Bell className="w-5 h-5 text-blue-500" /> Upcoming
+        </h3>
+        <div className="space-y-6">
+          {events.length === 0 ? (
+            <div className="text-center py-12 opacity-40">
+               <div className="w-16 h-16 rounded-full bg-slate-800 mx-auto mb-4 flex items-center justify-center"><Clock className="w-6 h-6" /></div>
+               <p className="text-sm font-bold uppercase tracking-wider">No events yet</p>
             </div>
-            <form onSubmit={(e) => {
-              e.preventDefault();
-              addEvent({
-                title: e.target.title.value,
-                date: selectedDay.toISOString(),
-                calendarId: e.target.calendar.value,
-                description: e.target.description.value
-              });
-            }} className="p-6 space-y-4">
+          ) : (
+            events
+              .filter(e => new Date(e.date) >= new Date().setHours(0,0,0,0))
+              .sort((a,b) => new Date(a.date) - new Date(b.date))
+              .slice(0, 5)
+              .map(event => (
+                <div key={event.id} className="relative pl-6 border-l-2 border-slate-800 dark:border-slate-800 py-1">
+                   <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-blue-600 shadow-lg shadow-blue-600/30"></div>
+                   <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">{format(parseISO(event.date), 'EEE, MMM d')}</p>
+                   <h4 className="text-sm font-black mb-1">{event.title}</h4>
+                   <p className="text-xs text-slate-500 flex items-center gap-1"><Clock className="w-3 h-3" /> {event.time || 'All Day'}</p>
+                </div>
+              ))
+          )}
+        </div>
+      </aside>
+
+      {/* 4. Event Modal */}
+      {isEventModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className={`w-full max-w-lg rounded-[2.5rem] p-10 shadow-2xl scale-in-center ${darkMode ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} border border-white/5`}>
+            <div className="flex justify-between items-center mb-8">
               <div>
-                <label className="block text-sm font-medium mb-1 opacity-70">Event Title</label>
-                <input name="title" required autoFocus className={`w-full px-4 py-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'} border`} />
+                <h3 className="text-2xl font-black tracking-tight">Create Event</h3>
+                <p className="text-slate-500 font-medium">{format(selectedDate, 'EEEE, MMMM do')}</p>
               </div>
-              
+              <button onClick={() => setIsEventModalOpen(false)} className="p-3 bg-slate-100 dark:bg-slate-800 rounded-2xl hover:bg-slate-200 transition-all"><X className="w-6 h-6" /></button>
+            </div>
+            
+            <form onSubmit={saveEvent} className="space-y-6">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block mb-2">Event Title</label>
+                <input name="title" required autoFocus placeholder="Coffee with the team..." className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border font-semibold`} />
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium mb-1 opacity-70">Date</label>
-                  <div className="px-4 py-2 rounded-lg border dark:border-slate-700 opacity-60 text-sm">
-                    {format(selectedDay || new Date(), 'PPP')}
-                  </div>
+                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block mb-2">Time</label>
+                  <input name="time" type="time" className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border font-semibold`} />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1 opacity-70">Calendar</label>
-                  <select name="calendar" className={`w-full px-4 py-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'} border`}>
-                    {calendars.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
+                  <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block mb-2">Calendar</label>
+                  <select name="calendar" className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border font-bold`}>
+                    {calendars.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-1 opacity-70">Description</label>
-                <textarea name="description" rows="3" className={`w-full px-4 py-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 ${darkMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-slate-50 border-slate-200'} border`}></textarea>
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block mb-2">Notes</label>
+                <textarea name="description" rows="3" placeholder="Add details..." className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border font-medium`}></textarea>
               </div>
 
-              <div className="flex gap-3 pt-4">
-                <button type="button" onClick={() => setIsEventModalOpen(false)} className="flex-1 py-2 rounded-lg font-medium border dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
-                  Cancel
-                </button>
-                <button type="submit" className="flex-1 py-2 rounded-lg font-medium bg-blue-600 hover:bg-blue-700 text-white transition-colors">
-                  Create Event
-                </button>
+              <div className="flex gap-4 pt-4">
+                <button type="button" onClick={() => setIsEventModalOpen(false)} className="flex-1 py-4 font-bold rounded-2xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all">Cancel</button>
+                <button type="submit" className="flex-1 py-4 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-2xl shadow-xl shadow-blue-600/30 transition-all transform hover:scale-[1.02] active:scale-95">Save Event</button>
               </div>
             </form>
           </div>
