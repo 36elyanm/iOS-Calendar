@@ -32,22 +32,27 @@ import {
   Search
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { 
-  getAuth, 
-  onAuthStateChanged, 
+import {
+  getAuth,
+  onAuthStateChanged,
   signOut,
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithCustomToken,
-  signInAnonymously
+  signInAnonymously,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence
 } from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  addDoc, 
-  onSnapshot, 
+import {
+  getFirestore,
+  collection,
+  doc,
+  addDoc,
+  onSnapshot,
   deleteDoc,
+  setDoc,
+  getDoc,
   query,
   orderBy
 } from 'firebase/firestore';
@@ -65,14 +70,16 @@ export default function App() {
   const [darkMode, setDarkMode] = useState(true);
   const [currentDate, setCurrentDate] = useState(new Date());
   const [events, setEvents] = useState([]);
-  const [calendars, setCalendars] = useState([
-    { id: 'personal', name: 'Personal', color: '#3b82f6' },
-    { id: 'work', name: 'Work', color: '#ef4444' }
-  ]);
+  const [calendars, setCalendars] = useState([]);
   const [isEventModalOpen, setIsEventModalOpen] = useState(false);
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [authMode, setAuthMode] = useState('login');
   const [authError, setAuthError] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
+  const [newCalendarName, setNewCalendarName] = useState('');
+  const [newCalendarColor, setNewCalendarColor] = useState('#3b82f6');
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
 
   // 1. Auth Logic
   useEffect(() => {
@@ -88,7 +95,7 @@ export default function App() {
     return onAuthStateChanged(auth, setUser);
   }, []);
 
-  // 2. Data Sync
+  // 2. Events Sync
   useEffect(() => {
     if (!user) return;
     const eventsRef = collection(db, 'artifacts', appId, 'users', user.uid, 'events');
@@ -97,6 +104,48 @@ export default function App() {
     }, (err) => console.error("Sync error:", err));
   }, [user]);
 
+  // 3. Calendars Sync (with first-time seeding)
+  useEffect(() => {
+    if (!user) return;
+    let seeded = false;
+    const calRef = collection(db, 'artifacts', appId, 'users', user.uid, 'calendars');
+    const unsub = onSnapshot(calRef, async (snapshot) => {
+      if (snapshot.empty && !seeded) {
+        seeded = true;
+        await seedDefaultCalendars(user.uid);
+      } else {
+        const sorted = snapshot.docs
+          .map(d => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        setCalendars(sorted);
+      }
+    }, (err) => console.error("Calendar sync error:", err));
+    return unsub;
+  }, [user]);
+
+  // 4. Preferences Loader (one-time read on login)
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    const prefRef = doc(db, 'artifacts', appId, 'users', user.uid, 'preferences', 'settings');
+    getDoc(prefRef).then((snap) => {
+      if (cancelled) return;
+      if (snap.exists() && typeof snap.data().darkMode === 'boolean') {
+        setDarkMode(snap.data().darkMode);
+      }
+    }).catch(console.error).finally(() => {
+      if (!cancelled) setPreferencesLoaded(true);
+    });
+    return () => { cancelled = true; };
+  }, [user]);
+
+  // 5. Dark Mode Write-back (after preferences loaded)
+  useEffect(() => {
+    if (!user || !preferencesLoaded) return;
+    const prefRef = doc(db, 'artifacts', appId, 'users', user.uid, 'preferences', 'settings');
+    setDoc(prefRef, { darkMode }, { merge: true }).catch(console.error);
+  }, [darkMode, user, preferencesLoaded]);
+
   // --- Helpers ---
   const days = useMemo(() => {
     const start = startOfWeek(startOfMonth(currentDate));
@@ -104,12 +153,36 @@ export default function App() {
     return eachDayOfInterval({ start, end });
   }, [currentDate]);
 
+  // --- Calendar helpers ---
+  const seedDefaultCalendars = async (uid) => {
+    const col = collection(db, 'artifacts', appId, 'users', uid, 'calendars');
+    await setDoc(doc(col, 'personal'), { name: 'Personal', color: '#3b82f6', order: 0 });
+    await setDoc(doc(col, 'work'),     { name: 'Work',     color: '#ef4444', order: 1 });
+  };
+
+  const saveCalendar = async (e) => {
+    e.preventDefault();
+    if (!newCalendarName.trim()) return;
+    const col = collection(db, 'artifacts', appId, 'users', user.uid, 'calendars');
+    await addDoc(col, { name: newCalendarName.trim(), color: newCalendarColor, order: Date.now() });
+    setNewCalendarName('');
+    setNewCalendarColor('#3b82f6');
+    setIsCalendarModalOpen(false);
+  };
+
+  const deleteCalendar = async (calendarId) => {
+    if (!confirm('Delete this calendar? Events assigned to it will remain but lose their color.')) return;
+    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'calendars', calendarId));
+  };
+
   const handleAuth = async (e) => {
     e.preventDefault();
     setAuthError('');
     const email = e.target.email.value;
     const password = e.target.password.value;
     try {
+      const persistence = rememberMe ? browserLocalPersistence : browserSessionPersistence;
+      await setPersistence(auth, persistence);
       if (authMode === 'signup') await createUserWithEmailAndPassword(auth, email, password);
       else await signInWithEmailAndPassword(auth, email, password);
     } catch (err) { setAuthError(err.message.replace('Firebase: ', '')); }
@@ -145,6 +218,15 @@ export default function App() {
           <form onSubmit={handleAuth} className="space-y-5">
             <input name="email" type="email" placeholder="Email Address" required className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border`} />
             <input name="password" type="password" placeholder="Password" required className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border`} />
+            <label className="flex items-center gap-3 cursor-pointer select-none px-1">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={e => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded accent-blue-500 cursor-pointer"
+              />
+              <span className={`text-sm font-medium ${darkMode ? 'text-slate-400' : 'text-slate-500'}`}>Remember me</span>
+            </label>
             {authError && <div className="p-3 rounded-lg bg-red-500/10 text-red-500 text-sm text-center border border-red-500/20">{authError}</div>}
             <button className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-2xl shadow-xl shadow-blue-500/20 transition-all transform hover:scale-[1.02] active:scale-95">
               {authMode === 'login' ? 'Welcome Back' : 'Get Started'}
@@ -185,12 +267,28 @@ export default function App() {
           </div>
 
           <div>
-            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 px-2">Calendars</h3>
+            <div className="flex items-center justify-between mb-4 px-2">
+              <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500">Calendars</h3>
+              <button
+                onClick={() => setIsCalendarModalOpen(true)}
+                className="w-6 h-6 flex items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-500 text-white transition-all shadow-lg shadow-blue-600/20"
+                title="Add Calendar"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
             <div className="space-y-2">
               {calendars.map(cal => (
                 <div key={cal.id} className="flex items-center gap-3 px-4 py-2 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-xl cursor-pointer group transition-all">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: cal.color }}></div>
-                  <span className="text-sm font-semibold">{cal.name}</span>
+                  <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: cal.color }}></div>
+                  <span className="text-sm font-semibold flex-1 truncate">{cal.name}</span>
+                  <button
+                    onClick={e => { e.stopPropagation(); deleteCalendar(cal.id); }}
+                    className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg hover:bg-red-500/10 text-red-500"
+                    title="Delete calendar"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                  </button>
                 </div>
               ))}
             </div>
@@ -264,7 +362,7 @@ export default function App() {
                     {dayEvents.slice(0, 3).map(event => {
                       const cal = calendars.find(c => c.id === event.calendarId);
                       return (
-                        <div key={event.id} className="group px-2 py-1.5 rounded-lg text-[10px] font-bold border-l-4 truncate shadow-sm transition-transform hover:scale-[1.02]" style={{ backgroundColor: `${cal?.color}15`, borderLeftColor: cal?.color, color: cal?.color }}>
+                        <div key={event.id} className="group px-2 py-1.5 rounded-lg text-[10px] font-bold border-l-4 truncate shadow-sm transition-transform hover:scale-[1.02]" style={{ backgroundColor: `${cal?.color ?? '#64748b'}15`, borderLeftColor: cal?.color ?? '#64748b', color: cal?.color ?? '#64748b' }}>
                           {event.time && <span className="mr-1.5 opacity-60">{event.time}</span>}
                           {event.title}
                           <button onClick={(e) => { e.stopPropagation(); if(confirm('Delete event?')) deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'events', event.id)); }} className="absolute right-1 top-1 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 bg-red-500 rounded text-white"><Trash2 className="w-2 h-2" /></button>
@@ -308,7 +406,66 @@ export default function App() {
         </div>
       </aside>
 
-      {/* 4. Event Modal */}
+      {/* 4. Add Calendar Modal */}
+      {isCalendarModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
+          <div className={`w-full max-w-sm rounded-[2rem] p-8 shadow-2xl ${darkMode ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} border border-white/5`}>
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-xl font-black tracking-tight">New Calendar</h3>
+              <button
+                onClick={() => { setIsCalendarModalOpen(false); setNewCalendarName(''); setNewCalendarColor('#3b82f6'); }}
+                className="p-2 bg-slate-100 dark:bg-slate-800 rounded-xl hover:bg-slate-200 dark:hover:bg-slate-700 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={saveCalendar} className="space-y-5">
+              <div>
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block mb-2">Name</label>
+                <input
+                  required
+                  autoFocus
+                  value={newCalendarName}
+                  onChange={e => setNewCalendarName(e.target.value)}
+                  placeholder="e.g. Family"
+                  className={`w-full px-5 py-4 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 transition-all ${darkMode ? 'bg-slate-800 border-slate-700' : 'bg-slate-100 border-slate-200'} border font-semibold`}
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase tracking-widest text-slate-500 block mb-3">Color</label>
+                <div className="flex gap-3 flex-wrap">
+                  {['#3b82f6','#ef4444','#22c55e','#f59e0b','#a855f7','#ec4899','#14b8a6','#f97316'].map(color => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => setNewCalendarColor(color)}
+                      className={`w-8 h-8 rounded-full transition-all transform hover:scale-110 ${newCalendarColor === color ? `ring-2 ring-offset-2 ${darkMode ? 'ring-offset-slate-900' : 'ring-offset-white'} ring-white scale-110` : ''}`}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => { setIsCalendarModalOpen(false); setNewCalendarName(''); setNewCalendarColor('#3b82f6'); }}
+                  className="flex-1 py-3 font-bold rounded-2xl border border-slate-200 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                >
+                  Cancel
+                </button>
+                <button type="submit" className="flex-1 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-2xl shadow-xl shadow-blue-600/30 transition-all transform hover:scale-[1.02] active:scale-95">
+                  Create
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 5. Event Modal */}
       {isEventModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-300">
           <div className={`w-full max-w-lg rounded-[2.5rem] p-10 shadow-2xl scale-in-center ${darkMode ? 'bg-slate-900 text-white' : 'bg-white text-slate-900'} border border-white/5`}>
